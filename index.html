@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>图片裁剪预览与保存</title>
+  <style>
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background-color: #f4f4f4;
+    }
+    #container {
+      position: relative;
+      width: 100%;
+      max-width: 1600px;
+      height: auto;
+      aspect-ratio: 16 / 9; /* 保持宽高比 */
+      border: 1px solid #000;
+      margin-top: 20px;
+      background-color: #fff;
+    }
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    #imageCanvas {
+      z-index: 1; /* 图片图层在最底层 */
+      cursor: grab;
+    }
+    #maskCanvas {
+      pointer-events: none;
+      z-index: 3; /* 蒙版在中间 */
+    }
+    #thumbnailCanvas {
+      z-index: 2; /* 缩略图在蒙版下层 */
+      pointer-events: none; /* 缩略图不响应鼠标事件 */
+    }
+    #controls {
+      margin-top: 20px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+    #controls > * {
+      margin: 0 5px;
+    }
+    button {
+      padding: 5px 10px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>图片裁剪预览与保存</h1>
+  <input type="file" id="fileInput" accept="image/*">
+  <div id="container">
+    <canvas id="imageCanvas"></canvas>
+    <canvas id="thumbnailCanvas"></canvas>
+    <canvas id="maskCanvas"></canvas>
+  </div>
+  <div id="controls">
+    <label for="scaleRange">缩放：</label>
+    <input type="range" id="scaleRange" min="0.1" max="3" step="0.1" value="1">
+    <label for="rotateRange">旋转：</label>
+    <input type="range" id="rotateRange" min="-180" max="180" step="1" value="0">
+    <button id="saveButton">保存裁剪后的图片</button>
+  </div>
+
+  <script>
+    const imageCanvas = document.getElementById('imageCanvas');
+    const maskCanvas = document.getElementById('maskCanvas');
+    const thumbnailCanvas = document.getElementById('thumbnailCanvas');
+
+    const imageCtx = imageCanvas.getContext('2d');
+    const maskCtx = maskCanvas.getContext('2d');
+    const thumbnailCtx = thumbnailCanvas.getContext('2d');
+
+    const fileInput = document.getElementById('fileInput');
+    const scaleRange = document.getElementById('scaleRange');
+    const rotateRange = document.getElementById('rotateRange');
+    const saveButton = document.getElementById('saveButton');
+
+    let userImage = new Image();
+    let maskImage = new Image(); // 蒙版图片
+    let scale = 1;
+    let rotation = 0;
+    let offsetX = 0, offsetY = 0;
+    let isDragging = false, startX = 0, startY = 0;
+
+    // 动态设置画布大小
+    const canvasWidth = Math.min(1600, window.innerWidth);
+    const canvasHeight = Math.min(900, window.innerHeight);
+    imageCanvas.width = canvasWidth;
+    imageCanvas.height = canvasHeight;
+    maskCanvas.width = canvasWidth;
+    maskCanvas.height = canvasHeight;
+    thumbnailCanvas.width = canvasWidth;
+    thumbnailCanvas.height = canvasHeight;
+
+    // 窗口1（裁剪预览窗口）的位置
+    const window1 = { x1: 764, y1: 238, x2: 1340, y2: 815 };
+    // 窗口2（缩略图窗口）的位置
+    const window2 = { x1: 211, y1: 192, x2: 420, y2: 384 };
+    // 窗口3（缩略图窗口）的位置，保持底部位置不变，尺寸调整为 175x175
+   const window3 = { x1: 228, y1: 475, x2: 407, y2: 660 };
+
+    // 初始化时加载默认蒙版图片
+    window.onload = () => {
+      maskImage.src = "蛋仔绘制界面.png"; // 请确保图片路径正确
+      maskImage.onload = () => {
+        drawMask(); // 绘制蒙版
+      };
+    };
+
+    // 加载用户图片
+    fileInput.addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          userImage.src = e.target.result;
+          userImage.onload = () => {
+            drawImage();
+          };
+        };
+        reader.readAsDataURL(file);
+      }
+    });
+
+    const drawImage = () => {
+      imageCtx.clearRect(0, 0, imageCanvas.width, imageCanvas.height);
+
+      // 绘制用户图片到主画布
+      imageCtx.save();
+      imageCtx.translate(imageCanvas.width / 2 + offsetX, imageCanvas.height / 2 + offsetY);
+      imageCtx.rotate((rotation * Math.PI) / 180);
+      imageCtx.scale(scale, scale);
+      imageCtx.drawImage(
+        userImage,
+        -userImage.width / 2,
+        -userImage.height / 2
+      );
+      imageCtx.restore();
+
+      updateWindows();
+    };
+
+    const drawMask = () => {
+      maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+      // 绘制蒙版图片
+      maskCtx.drawImage(maskImage, 0, 0, maskCanvas.width, maskCanvas.height);
+    };
+
+    const updateWindows = () => {
+      const width1 = window1.x2 - window1.x1;
+      const height1 = window1.y2 - window1.y1;
+      const width2 = window2.x2 - window2.x1;
+      const height2 = window2.y2 - window2.y1;
+      const width3 = window3.x2 - window3.x1;
+      const height3 = window3.y2 - window3.y1;
+
+      // 清除窗口2和窗口3的内容
+      thumbnailCtx.clearRect(0, 0, thumbnailCanvas.width, thumbnailCanvas.height);
+
+      // 绘制裁剪内容到窗口2（缩略图）
+      thumbnailCtx.save();
+      thumbnailCtx.drawImage(
+        imageCanvas,
+        window1.x1, window1.y1, width1, height1,
+        window2.x1, window2.y1, width2, height2
+      );
+      thumbnailCtx.restore();
+
+      // 绘制裁剪内容到窗口3（缩略图）
+      thumbnailCtx.save();
+      thumbnailCtx.drawImage(
+        imageCanvas,
+        window1.x1, window1.y1, width1, height1,
+        window3.x1, window3.y1, width3, height3
+      );
+
+      // 添加暖黄色滤镜
+      const gradient = thumbnailCtx.createRadialGradient(
+        window3.x1 + width3 / 2,
+        window3.y1 + height3 / 2,
+        0,
+        window3.x1 + width3 / 2,
+        window3.y1 + height3 / 2,
+        Math.max(width3, height3) / 2
+      );
+      gradient.addColorStop(0, 'rgba(255, 200, 100, 0.5)');
+      gradient.addColorStop(1, 'rgba(255, 200, 100, 0.1)');
+      thumbnailCtx.fillStyle = gradient;
+      thumbnailCtx.fillRect(window3.x1, window3.y1, width3, height3);
+
+      thumbnailCtx.restore();
+    };
+
+    // 拖动逻辑
+    imageCanvas.addEventListener('mousedown', (event) => {
+      isDragging = true;
+      startX = event.clientX;
+      startY = event.clientY;
+      imageCanvas.style.cursor = "grabbing";
+    }, { passive: true });
+
+    imageCanvas.addEventListener('touchstart', (event) => {
+      isDragging = true;
+      const touch = event.touches[0];
+      startX = touch.clientX;
+      startY = touch.clientY;
+    }, { passive: true });
+
+    document.addEventListener('mouseup', () => {
+      isDragging = false;
+      imageCanvas.style.cursor = "grab";
+    });
+
+    document.addEventListener('touchend', () => {
+      isDragging = false;
+    });
+
+    document.addEventListener('mousemove', (event) => {
+      if (isDragging) {
+        const dx = event.clientX - startX;
+        const dy = event.clientY - startY;
+
+        offsetX += dx;
+        offsetY += dy;
+
+        startX = event.clientX;
+        startY = event.clientY;
+
+        drawImage();
+      }
+    }, { passive: true });
+
+    document.addEventListener('touchmove', (event) => {
+      if (isDragging) {
+        const touch = event.touches[0];
+        const dx = touch.clientX - startX;
+        const dy = touch.clientY - startY;
+
+        offsetX += dx;
+        offsetY += dy;
+
+        startX = touch.clientX;
+        startY = touch.clientY;
+
+        drawImage();
+      }
+    }, { passive: true });
+
+    // 缩放和旋转逻辑
+    scaleRange.addEventListener('input', () => {
+      scale = parseFloat(scaleRange.value);
+      drawImage();
+    });
+
+    rotateRange.addEventListener('input', () => {
+      rotation = parseInt(rotateRange.value);
+      drawImage();
+    });
+
+    // 保存裁剪后的图片
+    saveButton.addEventListener('click', () => {
+      const tempCanvas = document.createElement('canvas');
+      const tempCtx = tempCanvas.getContext('2d');
+
+      const cropWidth = window1.x2 - window1.x1;
+      const cropHeight = window1.y2 - window1.y1;
+      tempCanvas.width = cropWidth;
+      tempCanvas.height = cropHeight;
+
+      tempCtx.drawImage(
+        imageCanvas,
+        window1.x1, window1.y1, cropWidth, cropHeight,
+        0, 0, cropWidth, cropHeight
+      );
+
+      const dataURL = tempCanvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.href = dataURL;
+      link.download = '裁剪后的图片.png';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    });
+  </script>
+</body>
+</html>
